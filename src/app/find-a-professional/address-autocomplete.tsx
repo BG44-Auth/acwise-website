@@ -25,7 +25,13 @@ function loadGoogleMapsScript(apiKey: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const script = document.createElement("script");
     script.id = GOOGLE_MAPS_SCRIPT_ID;
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places&loading=async`;
+    // No loading=async here on purpose: that flag switches Google's script
+    // to a lazy, split library-loading pattern where google.maps.places
+    // isn't guaranteed to exist the instant onload fires, it's meant to be
+    // paired with awaiting google.maps.importLibrary() instead. This code
+    // assumes classic synchronous-after-onload availability, which is what
+    // omitting the flag actually guarantees.
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places`;
     script.async = true;
     script.onload = () => resolve();
     script.onerror = () => reject(new Error("Failed to load Google Maps"));
@@ -116,24 +122,43 @@ export function AddressAutocomplete({
   }
 
   useEffect(() => {
-    if (scriptState !== "ready" || !inputRef.current || !window.google) return;
+    if (
+      scriptState !== "ready" ||
+      !inputRef.current ||
+      !window.google?.maps?.places?.Autocomplete
+    ) {
+      return;
+    }
 
-    const autocomplete = new window.google.maps.places.Autocomplete(
-      inputRef.current,
-      {
-        componentRestrictions: { country: "au" },
-        fields: ["address_components", "formatted_address"],
-        types: ["address"],
-      },
-    );
+    // Defense in depth: a script-loading race, an unexpected Google API
+    // change, or a bad key/billing state should degrade to manual entry,
+    // never crash the whole page. This is exactly the kind of failure the
+    // platform build principles call out explicitly (fail gracefully, know
+    // when it's broken).
+    try {
+      const autocomplete = new window.google.maps.places.Autocomplete(
+        inputRef.current,
+        {
+          componentRestrictions: { country: "au" },
+          fields: ["address_components", "formatted_address"],
+          types: ["address"],
+        },
+      );
 
-    const listener = autocomplete.addListener("place_changed", () => {
-      const place = autocomplete.getPlace();
-      if (!place.address_components) return;
-      handleSelect(parseAddressComponents(place));
-    });
+      const listener = autocomplete.addListener("place_changed", () => {
+        const place = autocomplete.getPlace();
+        if (!place.address_components) return;
+        handleSelect(parseAddressComponents(place));
+      });
 
-    return () => listener.remove();
+      return () => listener.remove();
+    } catch {
+      // Deferred rather than called synchronously in the effect body, this
+      // is a genuine "external system misbehaved" fallback, not derived
+      // render state, so a microtask hop avoids the cascading-render
+      // pattern the lint rule is actually guarding against.
+      queueMicrotask(() => setScriptState("unavailable"));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scriptState]);
 
