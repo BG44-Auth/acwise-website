@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "acwise-dev",
+      "runtimeExecutable": "cmd.exe",
+      "runtimeArgs": [
+        "/c",
+        "set PATH=C:\\Program Files\\nodejs;%PATH% && npm run dev"
+      ],
+      "port": 3000
+    },
+    {
+      "name": "acwise-rebuild-dev",
+      "runtimeExecutable": "cmd.exe",
+      "runtimeArgs": [
+        "/c",
+        "set PATH=C:\\Program Files\\nodejs;%PATH% && cd /d C:\\Users\\bcgus\\acwise-rebuild && npm run dev -- -p 3002"
+      ],
+      "port": 3002
+    }
+  ]
+}
