@@ -185,6 +185,19 @@ export function AddressAutocomplete({
           type="text"
           placeholder="Start typing your street address"
           defaultValue={value?.formatted}
+          // Belt and braces: if the Google dropdown never actually returns a
+          // suggestion (wrong API tier, network hiccup, an account
+          // restriction like Places' "not available to new customers"
+          // notice), place_changed never fires and there'd be no way to
+          // complete this field at all. Falling back to the same manual
+          // parse used in the "unavailable" branch on blur, but only when a
+          // real selection hasn't already produced a complete address, so a
+          // genuine Google pick never gets clobbered by this safety net.
+          onBlur={(event) => {
+            if (!isAddressComplete(value)) {
+              handleSelect(parseManualAddress(event.target.value));
+            }
+          }}
           className="w-full rounded-xl border border-border bg-muted/50 px-4 py-3 text-sm text-white placeholder:text-muted-foreground focus:border-brand/60 focus:outline-none"
         />
       )}
