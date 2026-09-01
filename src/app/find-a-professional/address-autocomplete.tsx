@@ -1,50 +1,20 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { AlertCircle, Check } from "lucide-react";
+import { AlertCircle, Check, Loader2 } from "lucide-react";
 import { isAddressComplete, type WizardAddress } from "./types";
-
-const GOOGLE_MAPS_SCRIPT_ID = "google-maps-places-script";
-
-declare global {
-  interface Window {
-    google?: typeof google;
-  }
-}
-
-function loadGoogleMapsScript(apiKey: string): Promise<void> {
-  if (window.google?.maps?.places) return Promise.resolve();
-
-  const existing = document.getElementById(
-    GOOGLE_MAPS_SCRIPT_ID,
-  ) as HTMLScriptElement | null;
-  if (existing) {
-    return new Promise((resolve) => existing.addEventListener("load", () => resolve()));
-  }
-
-  return new Promise((resolve, reject) => {
-    const script = document.createElement("script");
-    script.id = GOOGLE_MAPS_SCRIPT_ID;
-    // No loading=async here on purpose: that flag switches Google's script
-    // to a lazy, split library-loading pattern where google.maps.places
-    // isn't guaranteed to exist the instant onload fires, it's meant to be
-    // paired with awaiting google.maps.importLibrary() instead. This code
-    // assumes classic synchronous-after-onload availability, which is what
-    // omitting the flag actually guarantees.
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places`;
-    script.async = true;
-    script.onload = () => resolve();
-    script.onerror = () => reject(new Error("Failed to load Google Maps"));
-    document.head.appendChild(script);
-  });
-}
+import {
+  searchAddresses,
+  getPlaceDetails,
+  type AddressSuggestion,
+} from "./address-search";
 
 const AU_STATES = ["NSW", "VIC", "QLD", "WA", "SA", "TAS", "ACT", "NT"];
 
-// Best-effort parse for manual entry (no geocoding API configured). Pulls a
-// postcode and state out of free text so submissions still carry usable
-// structured data; falls back to the raw text as the suburb when it can't
-// find better.
+// Best-effort parse for manual entry, used whenever a suggestion isn't
+// picked (no results, network hiccup, or the visitor just types the whole
+// thing and moves on). Pulls a postcode and state out of free text so
+// submissions still carry usable structured data.
 function parseManualAddress(raw: string): WizardAddress {
   const formatted = raw.trim();
   const postcodeMatch = formatted.match(/\b(\d{4})\b/);
@@ -73,22 +43,6 @@ function parseManualAddress(raw: string): WizardAddress {
   };
 }
 
-function parseAddressComponents(
-  place: google.maps.places.PlaceResult,
-): WizardAddress {
-  const components = place.address_components ?? [];
-  const find = (type: string) =>
-    components.find((component) => component.types.includes(type))?.long_name;
-
-  return {
-    formatted: place.formatted_address ?? "",
-    suburb: find("locality") ?? find("sublocality"),
-    state: components.find((c) => c.types.includes("administrative_area_level_1"))
-      ?.short_name,
-    postcode: find("postal_code"),
-  };
-}
-
 export function AddressAutocomplete({
   value,
   onSelect,
@@ -96,117 +50,161 @@ export function AddressAutocomplete({
   value: WizardAddress | null;
   onSelect: (address: WizardAddress) => void;
 }) {
-  const inputRef = useRef<HTMLInputElement>(null);
-  const apiKey = process.env.NEXT_PUBLIC_GOOGLE_PLACES_API_KEY;
-  const [scriptState, setScriptState] = useState<
-    "idle" | "loading" | "ready" | "unavailable"
-  >(apiKey ? "loading" : "unavailable");
-  const [checkingCoverage, setCheckingCoverage] = useState(false);
+  const [query, setQuery] = useState(value?.formatted ?? "");
+  const [suggestions, setSuggestions] = useState<AddressSuggestion[]>([]);
+  const [isOpen, setIsOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [highlighted, setHighlighted] = useState(-1);
   const [touched, setTouched] = useState(false);
+  const [checkingCoverage, setCheckingCoverage] = useState(false);
+  const sessionTokenRef = useRef(crypto.randomUUID());
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => {
-    if (!apiKey) return;
-
-    loadGoogleMapsScript(apiKey)
-      .then(() => setScriptState("ready"))
-      .catch(() => setScriptState("unavailable"));
-  }, [apiKey]);
+    return () => clearTimeout(debounceRef.current);
+  }, []);
 
   function handleSelect(address: WizardAddress) {
     onSelect(address);
     setTouched(true);
+    setQuery(address.formatted);
+    setSuggestions([]);
+    setIsOpen(false);
     if (isAddressComplete(address)) {
       setCheckingCoverage(true);
       window.setTimeout(() => setCheckingCoverage(false), 1200);
     }
   }
 
-  useEffect(() => {
-    if (
-      scriptState !== "ready" ||
-      !inputRef.current ||
-      !window.google?.maps?.places?.Autocomplete
-    ) {
+  function handleQueryChange(next: string) {
+    setQuery(next);
+    setHighlighted(-1);
+    clearTimeout(debounceRef.current);
+
+    if (next.trim().length < 3) {
+      setSuggestions([]);
+      setIsOpen(false);
       return;
     }
 
-    // Defense in depth: a script-loading race, an unexpected Google API
-    // change, or a bad key/billing state should degrade to manual entry,
-    // never crash the whole page. This is exactly the kind of failure the
-    // platform build principles call out explicitly (fail gracefully, know
-    // when it's broken).
-    try {
-      const autocomplete = new window.google.maps.places.Autocomplete(
-        inputRef.current,
-        {
-          componentRestrictions: { country: "au" },
-          fields: ["address_components", "formatted_address"],
-          types: ["address"],
-        },
-      );
+    debounceRef.current = setTimeout(async () => {
+      setLoading(true);
+      const results = await searchAddresses(next, sessionTokenRef.current);
+      setLoading(false);
+      setSuggestions(results);
+      setIsOpen(results.length > 0);
+    }, 300);
+  }
 
-      const listener = autocomplete.addListener("place_changed", () => {
-        const place = autocomplete.getPlace();
-        if (!place.address_components) return;
-        handleSelect(parseAddressComponents(place));
-      });
+  async function pickSuggestion(suggestion: AddressSuggestion) {
+    const details = await getPlaceDetails(
+      suggestion.placeId,
+      sessionTokenRef.current,
+    );
+    // A fresh token per completed search, matches Google's own guidance for
+    // autocomplete + details billing sessions.
+    sessionTokenRef.current = crypto.randomUUID();
 
-      return () => listener.remove();
-    } catch {
-      // Deferred rather than called synchronously in the effect body, this
-      // is a genuine "external system misbehaved" fallback, not derived
-      // render state, so a microtask hop avoids the cascading-render
-      // pattern the lint rule is actually guarding against.
-      queueMicrotask(() => setScriptState("unavailable"));
+    if (details) {
+      handleSelect(details);
+    } else {
+      // Details lookup failed for whatever reason, the suggestion text
+      // itself is still a real, Google-confirmed address string, worth
+      // running through the manual parser rather than losing the pick
+      // entirely.
+      handleSelect(parseManualAddress(`${suggestion.mainText}, ${suggestion.secondaryText}`));
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scriptState]);
+  }
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (!isOpen || suggestions.length === 0) return;
+
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setHighlighted((i) => (i + 1) % suggestions.length);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setHighlighted((i) => (i <= 0 ? suggestions.length - 1 : i - 1));
+    } else if (event.key === "Enter" && highlighted >= 0) {
+      event.preventDefault();
+      pickSuggestion(suggestions[highlighted]);
+    } else if (event.key === "Escape") {
+      setIsOpen(false);
+    }
+  }
+
+  function handleBlur() {
+    // Belt and braces, same as before: whatever's in the field when focus
+    // leaves gets run through the manual parser, unless a real selection
+    // already produced a complete address, so a genuine pick never gets
+    // overwritten by this fallback.
+    setIsOpen(false);
+    if (!isAddressComplete(value) && query.trim()) {
+      handleSelect(parseManualAddress(query));
+    } else {
+      setTouched(true);
+    }
+  }
 
   const isVerified = isAddressComplete(value);
   const isInvalid = touched && !isVerified;
 
   return (
-    <div>
-      {scriptState === "unavailable" ? (
+    <div className="relative">
+      <div className="relative">
         <input
           type="text"
           placeholder="Start typing your street address"
-          defaultValue={value?.formatted}
-          onBlur={(event) => handleSelect(parseManualAddress(event.target.value))}
+          value={query}
+          onChange={(event) => handleQueryChange(event.target.value)}
+          onKeyDown={handleKeyDown}
+          onBlur={handleBlur}
+          onFocus={() => suggestions.length > 0 && setIsOpen(true)}
+          role="combobox"
+          aria-expanded={isOpen}
+          aria-controls="address-suggestions"
+          aria-autocomplete="list"
           className={`w-full rounded-xl border bg-muted/50 px-4 py-3 text-sm text-white placeholder:text-muted-foreground focus:outline-none ${
             isInvalid
               ? "border-red-400 focus:border-red-400"
               : "border-border focus:border-brand/60"
           }`}
         />
-      ) : (
-        <input
-          ref={inputRef}
-          type="text"
-          placeholder="Start typing your street address"
-          defaultValue={value?.formatted}
-          // Belt and braces: if the Google dropdown never actually returns a
-          // suggestion (wrong API tier, network hiccup, an account
-          // restriction like Places' "not available to new customers"
-          // notice), place_changed never fires and there'd be no way to
-          // complete this field at all. Falling back to the same manual
-          // parse used in the "unavailable" branch on blur, but only when a
-          // real selection hasn't already produced a complete address, so a
-          // genuine Google pick never gets clobbered by this safety net.
-          onBlur={(event) => {
-            if (!isAddressComplete(value)) {
-              handleSelect(parseManualAddress(event.target.value));
-            }
-          }}
-          className="w-full rounded-xl border border-border bg-muted/50 px-4 py-3 text-sm text-white placeholder:text-muted-foreground focus:border-brand/60 focus:outline-none"
-        />
-      )}
+        {loading && (
+          <Loader2
+            className="absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted-foreground"
+            aria-hidden="true"
+          />
+        )}
+      </div>
 
-      {scriptState === "unavailable" && (
-        <p className="mt-2 text-xs text-muted-foreground">
-          Address autocomplete isn&apos;t configured yet. Enter your address
-          manually.
-        </p>
+      {isOpen && suggestions.length > 0 && (
+        <ul
+          id="address-suggestions"
+          role="listbox"
+          className="glow-border absolute z-20 mt-2 w-full overflow-hidden rounded-xl bg-card shadow-2xl"
+        >
+          {suggestions.map((suggestion, index) => (
+            <li key={suggestion.placeId}>
+              <button
+                type="button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => pickSuggestion(suggestion)}
+                className={`block w-full px-4 py-3 text-left text-sm transition-colors ${
+                  index === highlighted ? "bg-muted" : "hover:bg-muted/60"
+                }`}
+              >
+                <span className="text-white">{suggestion.mainText}</span>
+                {suggestion.secondaryText && (
+                  <span className="text-muted-foreground">
+                    {" "}
+                    {suggestion.secondaryText}
+                  </span>
+                )}
+              </button>
+            </li>
+          ))}
+        </ul>
       )}
 
       {isVerified && (
