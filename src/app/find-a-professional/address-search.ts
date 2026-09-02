@@ -1,14 +1,14 @@
 "use server";
 
 // Google Places API (New): Autocomplete + Place Details, called server-side
-// only. Unlike the old client-side widget this replaces, the API key here
-// is never sent to the browser at all, this file only ever runs on the
-// server. Deliberately reads the same NEXT_PUBLIC_GOOGLE_PLACES_API_KEY
-// value already set in Vercel (the NEXT_PUBLIC_ prefix only causes a
-// variable to be inlined into the client bundle at the specific call sites
-// that reference it in client code, nothing does that here, so in practice
-// this key never leaves the server despite the variable's name).
-const PLACES_API_KEY = process.env.NEXT_PUBLIC_GOOGLE_PLACES_API_KEY;
+// only, the key never reaches the browser at all. This is a dedicated key
+// (GOOGLE_PLACES_SERVER_KEY), separate from the original
+// NEXT_PUBLIC_GOOGLE_PLACES_API_KEY on purpose: that one is HTTP-referrer
+// restricted for browser use, and a referrer-restricted key always fails a
+// server-to-server call, since there's no browser Referer header to check
+// against. This one has no application restriction, scoped safely instead
+// by an API restriction limiting it to just Places API (New).
+const PLACES_API_KEY = process.env.GOOGLE_PLACES_SERVER_KEY;
 
 export interface AddressSuggestion {
   placeId: string;
