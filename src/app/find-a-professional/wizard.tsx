@@ -5,6 +5,7 @@ import Link from "next/link";
 import { AlertCircle, Check, CheckCircle2, MapPin } from "lucide-react";
 import { AddressAutocomplete } from "./address-autocomplete";
 import { submitEnquiry, type SubmitEnquiryState } from "./actions";
+import { saveDraftProgress } from "./draft-actions";
 import {
   createDraftId,
   emptyEnquiry,
@@ -148,7 +149,11 @@ export function FindProfessionalWizard() {
   const showTenantBlock = data.relationship === "Tenant";
 
   const missingByStep: Record<number, string[]> = {
-    1: isAddressComplete(data.address) ? [] : ["address"],
+    1: [
+      !isAddressComplete(data.address) && "address",
+      !data.firstName && "firstName",
+      !isValidEmail(data.email) && "email",
+    ].filter((x): x is string => Boolean(x)),
     2: [
       !data.propertyType && "propertyType",
       !data.relationship && "relationship",
@@ -176,9 +181,7 @@ export function FindProfessionalWizard() {
       !data.bestTime && "bestTime",
     ].filter((x): x is string => Boolean(x)),
     7: [
-      !data.firstName && "firstName",
       !data.lastName && "lastName",
-      !isValidEmail(data.email) && "email",
       !isValidAuMobile(data.phone) && "phone",
     ].filter((x): x is string => Boolean(x)),
   };
@@ -193,7 +196,13 @@ export function FindProfessionalWizard() {
     }
     setShowIncomplete(false);
     setTouched({});
-    setStep((s) => Math.min(TOTAL_STEPS, s + 1));
+    const nextStep = Math.min(TOTAL_STEPS, step + 1);
+    setStep(nextStep);
+    // Best-effort, fire-and-forget: never block navigation on this. Once a
+    // name and email exist (from step 1 onward) each step advance refreshes
+    // the draft row, so a drop-off anywhere after this point still leaves a
+    // named, contactable, in-progress lead for follow-up.
+    void saveDraftProgress(draftId, nextStep, data);
   }
 
   function goBack() {
@@ -219,7 +228,7 @@ export function FindProfessionalWizard() {
       return;
     }
     setSubmitting(true);
-    const result = await submitEnquiry(data);
+    const result = await submitEnquiry(data, draftId);
     setSubmitState(result);
     setSubmitting(false);
     if (result.status === "success") {
@@ -289,6 +298,38 @@ export function FindProfessionalWizard() {
                 value={data.address}
                 onSelect={(address) => update("address", address)}
               />
+            </div>
+
+            <div className="mt-8 grid gap-4 sm:grid-cols-2">
+              <div>
+                <input
+                  placeholder="First name"
+                  value={data.firstName}
+                  onChange={(event) => update("firstName", event.target.value)}
+                  onBlur={() => markTouched("firstName")}
+                  className={inputClass(
+                    (touched.firstName || showIncomplete) && !data.firstName,
+                  )}
+                />
+                {(touched.firstName || showIncomplete) && !data.firstName && (
+                  <p className="mt-1 text-xs text-red-400">First name is required.</p>
+                )}
+              </div>
+              <div>
+                <input
+                  type="email"
+                  placeholder="Email"
+                  value={data.email}
+                  onChange={(event) => update("email", event.target.value)}
+                  onBlur={() => markTouched("email")}
+                  className={inputClass(
+                    (touched.email || showIncomplete) && !isValidEmail(data.email),
+                  )}
+                />
+                {(touched.email || showIncomplete) && !isValidEmail(data.email) && (
+                  <p className="mt-1 text-xs text-red-400">Enter a valid email address.</p>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -529,26 +570,15 @@ export function FindProfessionalWizard() {
           <div className="space-y-8">
             <div>
               <h2 className="font-heading text-xl font-bold text-white">
-                Your contact details
+                Almost done, {data.firstName || "there"}
               </h2>
               <p className="mt-2 text-sm text-muted-foreground">
-                Nearly there. We just need somewhere to send your matches.
+                Just your last name and a mobile number so partners can reach
+                you.
               </p>
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <input
-                  placeholder="First name"
-                  value={data.firstName}
-                  onChange={(event) => update("firstName", event.target.value)}
-                  onBlur={() => markTouched("firstName")}
-                  className={inputClass(touched.firstName && !data.firstName)}
-                />
-                {touched.firstName && !data.firstName && (
-                  <p className="mt-1 text-xs text-red-400">First name is required.</p>
-                )}
-              </div>
               <div>
                 <input
                   placeholder="Last name"
@@ -559,19 +589,6 @@ export function FindProfessionalWizard() {
                 />
                 {touched.lastName && !data.lastName && (
                   <p className="mt-1 text-xs text-red-400">Last name is required.</p>
-                )}
-              </div>
-              <div>
-                <input
-                  type="email"
-                  placeholder="Email"
-                  value={data.email}
-                  onChange={(event) => update("email", event.target.value)}
-                  onBlur={() => markTouched("email")}
-                  className={inputClass(touched.email && !isValidEmail(data.email))}
-                />
-                {touched.email && !isValidEmail(data.email) && (
-                  <p className="mt-1 text-xs text-red-400">Enter a valid email address.</p>
                 )}
               </div>
               <div>

@@ -16,6 +16,7 @@ export interface SubmitEnquiryState {
 
 export async function submitEnquiry(
   data: EnquiryData,
+  draftId?: string,
 ): Promise<SubmitEnquiryState> {
   // Structured location data (suburb/state/postcode, not just raw typed
   // text) is required before a submission is allowed through. A blank
@@ -74,6 +75,12 @@ export async function submitEnquiry(
   // collects goes into "details", a jsonb column added specifically so this
   // richer intake doesn't get thrown away or force-fit into columns the
   // spec never described.
+  // Deliberately not chaining .select() here: "enquiry" has no anon SELECT
+  // policy (read-gated to admin/matched-partner), so a select-back as this
+  // anonymous inserter would return zero rows, and .single() would then
+  // throw on a successful insert, turning a real submission into a false
+  // "something went wrong" for the customer. The draft link below is
+  // best-effort without the new row's id for exactly this reason.
   const { error } = await supabase.from("enquiry").insert({
     contact_name: `${data.firstName} ${data.lastName}`.trim(),
     contact_email: data.email,
@@ -114,6 +121,22 @@ export async function submitEnquiry(
       status: "error",
       message: "Something went wrong submitting your enquiry. Please try again.",
     };
+  }
+
+  // Close the loop on the drop-off-recovery draft: flip it out of
+  // "in_progress" so it stops showing up in the dashboard's "still
+  // deciding" follow-up list. Not linking submitted_enquiry_id here, that
+  // would need reading the new row's id back, which RLS blocks for this
+  // anonymous inserter (enquiry's SELECT policy is admin/matched-partner
+  // only) — "status" is what actually matters for hiding it from that
+  // list. A draft that was never started (direct API call, or a
+  // localStorage draft saved before this feature shipped) simply has no
+  // matching row to update.
+  if (draftId) {
+    await supabase
+      .from("enquiry_draft")
+      .update({ status: "submitted" })
+      .eq("draft_id", draftId);
   }
 
   // TODO once email is wired up: send the internal admin lead-notification
