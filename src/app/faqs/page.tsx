@@ -8,8 +8,27 @@ export const metadata: Metadata = {
 };
 
 export default function FaqsPage() {
+  // FAQPage schema, read by both search engines (the classic "expandable
+  // FAQ" rich result) and AI answer engines, which lean on exactly this
+  // structured Q&A shape when a user asks something this page already
+  // answers. Built straight from the same content the page renders, so
+  // the two can never drift out of sync.
+  const faqSchema = {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: [...customerFaqs, ...professionalFaqs].map((faq) => ({
+      "@type": "Question",
+      name: faq.question,
+      acceptedAnswer: { "@type": "Answer", text: faq.answer },
+    })),
+  };
+
   return (
     <div className="flex flex-1 flex-col bg-black">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(faqSchema) }}
+      />
       <section className="px-4 py-20 sm:px-6 lg:px-8">
         <div className="mx-auto max-w-3xl text-center">
           <p className="text-sm font-semibold tracking-widest text-brand uppercase">
