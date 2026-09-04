@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
+import { Analytics } from "@vercel/analytics/next";
 import { Poppins, Readex_Pro } from "next/font/google";
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
@@ -43,6 +44,7 @@ export default function RootLayout({
         <Suspense fallback={null}>
           <MetaPixel />
         </Suspense>
+        <Analytics />
       </body>
     </html>
   );
