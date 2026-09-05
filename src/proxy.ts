@@ -1,17 +1,30 @@
+import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { updateSession } from "@/lib/supabase/proxy";
 
+// The site's stable, guessable Vercel project domain, not a per-deployment
+// preview hash. Bianca doesn't want "vercel.app" visible to the public
+// anywhere, redirecting this one specifically (rather than every
+// *.vercel.app preview URL) means a stray link, old screenshot, or browser
+// autocomplete entry bounces straight to the real domain instead of
+// rendering the site there, while ad-hoc preview-branch URLs used for
+// internal review before a merge still work normally.
+const PUBLIC_VERCEL_DOMAIN = "acwise-website.vercel.app";
+
 export async function proxy(request: NextRequest) {
+  const hostname = request.nextUrl.hostname;
+
+  if (hostname === PUBLIC_VERCEL_DOMAIN) {
+    const target = new URL(request.nextUrl.pathname + request.nextUrl.search, "https://www.acwise.au");
+    return NextResponse.redirect(target, 308);
+  }
+
   const response = await updateSession(request);
 
-  // The site is reachable at its raw Vercel deployment URL as well as the
-  // real domain, and Google indexed that vercel.app URL before the
-  // acwise.au cutover finished, splitting search ranking across two
-  // "sites" that are actually one. noindex anything not served from the
-  // real domain so that URL drops out of search results over time,
-  // without touching the deployment URL's actual usefulness for preview/
-  // debugging access.
-  if (request.nextUrl.hostname.endsWith(".vercel.app")) {
+  // Belt-and-braces for any other *.vercel.app host (a preview-branch URL,
+  // say): not redirected, since those are meant to still work for internal
+  // review, but never indexable if a crawler stumbles onto one anyway.
+  if (hostname.endsWith(".vercel.app")) {
     response.headers.set("X-Robots-Tag", "noindex, nofollow");
   }
 
